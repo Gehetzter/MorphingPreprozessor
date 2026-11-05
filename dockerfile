@@ -27,10 +27,10 @@ COPY app/ /app/
 
 RUN mkdir -p /data/input /data/output
 
-EXPOSE 8501
+EXPOSE 8080
 
 CMD ["streamlit", "run", "main.py", \
      "--server.address=0.0.0.0", \
-     "--server.port=8501", \
+     "--server.port=8080", \
      "--server.headless=true", \
      "--browser.gatherUsageStats=false"]
