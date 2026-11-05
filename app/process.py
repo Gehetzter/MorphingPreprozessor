@@ -1,5 +1,14 @@
-"""Prozessablauf: verbindet die einzelnen Schritte aus dem Paket `steps`."""
+"""Prozessablauf: verbindet die einzelnen Schritte aus dem Paket `steps`.
 
+Speicherbedarf bleibt unabhängig von der Bildanzahl: Zwischenergebnisse liegen
+in einem temporären Ordner auf der Platte, fertige Bilder gehen sofort an
+`on_result` und werden nicht gesammelt.
+"""
+
+import gc
+import os
+import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -18,6 +27,9 @@ from steps.segment import segment
 
 log = get_logger("bodymorph.process")
 
+# Es läuft immer nur ein Batch gleichzeitig (mehrere Browser-Tabs/Nutzer)
+_BATCH_LOCK = threading.Lock()
+
 
 @dataclass
 class Options:
@@ -34,16 +46,32 @@ class Options:
 
 @dataclass
 class Prepared:
-    rgb: np.ndarray
-    alpha: np.ndarray  # Alpha für das Freistellen
+    rgb_path: str
+    alpha_path: str  # Alpha für das Freistellen
     cutout: bool
     position: tuple
     canvas_size: tuple
     color: np.ndarray
     metadata: dict = field(default_factory=dict)
 
+    def load(self):
+        rgb = np.load(self.rgb_path).astype(np.float32) / 65535.0
+        alpha = np.load(self.alpha_path).astype(np.float32) / 255.0
+        return rgb, alpha
 
-def prepare_image(image_bytes, filename, options, session):
+
+def _spill(directory, index, rgb, alpha):
+    """Speichert Zwischenergebnis verlustarm (16 Bit RGB, 8 Bit Alpha)."""
+    rgb_path = os.path.join(directory, f"{index}_rgb.npy")
+    alpha_path = os.path.join(directory, f"{index}_alpha.npy")
+
+    np.save(rgb_path, (np.clip(rgb, 0, 1) * 65535 + 0.5).astype(np.uint16))
+    np.save(alpha_path, (np.clip(alpha, 0, 1) * 255 + 0.5).astype(np.uint8))
+
+    return rgb_path, alpha_path
+
+
+def prepare_image(image_bytes, filename, options, session, directory, index):
     """Schritte 1-5: laden, freistellen, bereinigen, zuschneiden, skalieren."""
     image = load_image(image_bytes, filename)
     height, width = image.shape[:2]
@@ -71,13 +99,19 @@ def prepare_image(image_bytes, filename, options, session):
         options.margin_percent,
     )
 
+    # Große Arrays früh freigeben
+    del image, alpha, raw_mask
+
+    color = body_color(rgb, scaled_alpha)
+    rgb_path, alpha_path = _spill(directory, index, rgb, scaled_alpha)
+
     return Prepared(
-        rgb=rgb,
-        alpha=scaled_alpha,
+        rgb_path=rgb_path,
+        alpha_path=alpha_path,
         cutout=cutout,
         position=position,
         canvas_size=(canvas_width, canvas_height),
-        color=body_color(rgb, scaled_alpha),
+        color=color,
         metadata={
             "original_size": (width, height),
             "bounding_box": bbox,
@@ -91,16 +125,14 @@ def prepare_image(image_bytes, filename, options, session):
 
 def render_image(prepared, options, target_color):
     """Schritte 6-7: Farbe angleichen, auf Hintergrund setzen."""
-    rgb = prepared.rgb
+    rgb, alpha = prepared.load()
 
     if options.normalize_color and target_color is not None:
         rgb = apply_gain(rgb, prepared.color, target_color)
 
     fallback = None
 
-    if prepared.cutout:
-        alpha = prepared.alpha
-    else:
+    if not prepared.cutout:
         # Ohne Hintergrundentfernung: Originalausschnitt vollständig übernehmen
         alpha = np.ones(rgb.shape[:2], dtype=np.float32)
         border = np.concatenate([
@@ -121,14 +153,23 @@ def render_image(prepared, options, target_color):
     return composite(canvas, rgb, alpha, prepared.position)
 
 
-def process_batch(files, options, session, progress=None):
-    """Verarbeitet [(name, bytes), ...].
+def process_batch(files, options, session, progress=None, on_result=None):
+    """Verarbeitet [(name, loader), ...]; loader ist ein Aufruf, der die Bytes liefert.
 
-    Gibt (results, errors) zurück; results = [(index, image, metadata), ...].
+    Jedes fertige Bild geht an on_result(index, image, metadata) und wird danach
+    verworfen. Gibt (anzahl_ok, errors) zurück.
     Die Zielfarbe ist der Durchschnitt aller Bilder oder die gewählte Referenz.
     """
+    with _BATCH_LOCK, tempfile.TemporaryDirectory(prefix="bodymorph_") as directory:
+        return _run_batch(
+            files, options, session, progress, on_result, directory
+        )
+
+
+def _run_batch(files, options, session, progress, on_result, directory):
     prepared = {}
     errors = []
+    ok = 0
 
     total = len(files) * 2
     batch_start = time.monotonic()
@@ -141,18 +182,31 @@ def process_batch(files, options, session, progress=None):
         options.normalize_color, options.reference_index,
     )
 
-    for index, (name, data) in enumerate(files):
+    for index, (name, loader) in enumerate(files):
         start = time.monotonic()
+        data = None
 
         try:
-            prepared[index] = prepare_image(data, name, options, session)
+            data = loader()
+            size_kb = len(data) // 1024
+
+            prepared[index] = prepare_image(
+                data, name, options, session, directory, index
+            )
+
             log.info(
                 "Freigestellt: %s (%d KB, %.1fs)",
-                name, len(data) // 1024, time.monotonic() - start,
+                name, size_kb, time.monotonic() - start,
             )
+        except MemoryError:
+            log.error("Nicht genug Arbeitsspeicher für %s", name)
+            errors.append(f"{name}: Nicht genug Arbeitsspeicher")
         except Exception as exc:
             log.exception("Fehler beim Freistellen von %s", name)
             errors.append(f"{name}: {exc}")
+        finally:
+            data = None
+            gc.collect()
 
         if progress:
             progress((index + 1) / total, f"Freistellen: {name}")
@@ -169,17 +223,23 @@ def process_batch(files, options, session, progress=None):
 
         log.info("Zielfarbe (linear RGB): %s", np.round(target, 4).tolist())
 
-    results = []
-
     for step, (index, item) in enumerate(prepared.items()):
         name = files[index][0]
+        image = None
 
         try:
             image = render_image(item, options, target)
-            results.append((index, image, item.metadata))
+
+            if on_result:
+                on_result(index, image, item.metadata)
+
+            ok += 1
         except Exception as exc:
             log.exception("Fehler beim Rendern von %s", name)
             errors.append(f"{name}: {exc}")
+        finally:
+            image = None
+            gc.collect()
 
         if progress:
             progress(
@@ -189,7 +249,7 @@ def process_batch(files, options, session, progress=None):
 
     log.info(
         "Batch beendet: %d ok, %d Fehler, %.1fs",
-        len(results), len(errors), time.monotonic() - batch_start,
+        ok, len(errors), time.monotonic() - batch_start,
     )
 
-    return results, errors
+    return ok, errors

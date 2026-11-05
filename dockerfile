@@ -3,9 +3,11 @@ FROM python:3.11-slim
 
 ARG BUILD_NUMBER=dev
 ARG GIT_SHA=unknown
+ARG SEGMENTATION_MODEL=birefnet-general
 
 ENV BUILD_NUMBER=${BUILD_NUMBER} \
-    GIT_SHA=${GIT_SHA} \ PYTHONDONTWRITEBYTECODE=1 \
+    GIT_SHA=${GIT_SHA} \
+    SEGMENTATION_MODEL=${SEGMENTATION_MODEL} \ PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     U2NET_HOME=/models \
     HOME=/app
@@ -24,7 +26,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Modell bereits beim Image-Build herunterladen
 RUN mkdir -p /models && \
-    python -c "from rembg import new_session; new_session('birefnet-general')"
+    python -c "import os; from rembg import new_session; new_session(os.environ['SEGMENTATION_MODEL'])"
 
 # Python-Anwendung kopieren
 COPY app/ /app/

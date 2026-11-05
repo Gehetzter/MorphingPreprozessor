@@ -11,6 +11,15 @@ services:
       BACKGROUND_COLOR: "#D3D3D3"
       U2NET_HOME: /models
       PYTHONUNBUFFERED: "1"
+      ORT_THREADS: "2"
+      OMP_NUM_THREADS: "2"
+      SEGMENTATION_MODEL: birefnet-general
+    # Die VM hat wenig RAM, daher wird auf VM-Swap (Festplatte) ausgewichen.
+    # mem_limit + Swap = memswap_limit: darüber stirbt nur dieser Container.
+    mem_limit: 1g
+    memswap_limit: 10g
+    cpus: 2
+    init: true
     networks:
       - MorphingIsolated
     restart: unless-stopped

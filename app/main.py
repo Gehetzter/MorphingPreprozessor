@@ -1,14 +1,13 @@
 
-import io
 import os
 import time
 import zipfile
 import streamlit as st
 
 from pathlib import Path
-from rembg import new_session
 
 from log import get_logger
+from model import MODEL_NAME, load_session
 from process import Options, process_batch
 from steps.background import load_background_image
 
@@ -21,6 +20,7 @@ log = get_logger("bodymorph.app")
 
 OUTPUT_DIR = Path("/data/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+ZIP_PATH = OUTPUT_DIR / "bodymorph_output.zip"
 
 # Dateien im Ausgabeordner, die älter sind, werden beim Aufruf der Seite gelöscht
 OUTPUT_MAX_AGE_HOURS = float(os.environ.get("OUTPUT_MAX_AGE_HOURS", "24"))
@@ -58,8 +58,8 @@ st.set_page_config(
 
 @st.cache_resource
 def load_model():
-    log.info("Lade Segmentierungsmodell birefnet-general")
-    session = new_session("birefnet-general")
+    log.info("Lade Segmentierungsmodell %s", MODEL_NAME)
+    session = load_session()
     log.info("Modell geladen")
     return session
 
@@ -250,15 +250,7 @@ if uploads:
             progress.progress(value)
             status.write(text)
 
-        processed, errors = process_batch(
-            [(u.name, u.getvalue()) for u in uploads],
-            options,
-            session,
-            progress=on_progress,
-        )
-
-        for index, output, metadata in processed:
-
+        def on_result(index, output, metadata):
             filename = (
                 f"{index + 1:03d}_"
                 f"{Path(uploads[index].name).stem}.png"
@@ -269,19 +261,31 @@ if uploads:
                 format="PNG"
             )
 
-            buffer = io.BytesIO()
-
-            output.save(
-                buffer,
-                format="PNG"
-            )
-
             results.append({
                 "filename": filename,
-                "image": output,
-                "data": buffer.getvalue(),
                 "metadata": metadata
             })
+
+        _, errors = process_batch(
+            [(u.name, u.getvalue) for u in uploads],
+            options,
+            session,
+            progress=on_progress,
+            on_result=on_result,
+        )
+
+        # ZIP auf der Platte (PNGs sind schon komprimiert -> nur ablegen)
+        with zipfile.ZipFile(
+            ZIP_PATH,
+            "w",
+            zipfile.ZIP_STORED
+        ) as archive:
+
+            for result in results:
+                archive.write(
+                    OUTPUT_DIR / result["filename"],
+                    result["filename"]
+                )
 
         st.session_state["results"] = results
         st.session_state["errors"] = errors
@@ -314,7 +318,7 @@ if results:
             with col1:
 
                 st.image(
-                    result["image"],
+                    str(OUTPUT_DIR / result["filename"]),
                     use_container_width=True
                 )
 
@@ -342,36 +346,23 @@ if results:
 
                 st.download_button(
                     "PNG herunterladen",
-                    data=result["data"],
+                    data=(OUTPUT_DIR / result["filename"]).read_bytes(),
                     file_name=result["filename"],
                     mime="image/png",
                     key=result["filename"]
                 )
 
-    # ZIP-Export
-    zip_buffer = io.BytesIO()
+    # ZIP-Export (liegt fertig auf der Platte)
+    if ZIP_PATH.exists():
 
-    with zipfile.ZipFile(
-        zip_buffer,
-        "w",
-        zipfile.ZIP_DEFLATED
-    ) as archive:
-
-        for result in results:
-
-            archive.writestr(
-                result["filename"],
-                result["data"]
-            )
-
-    st.download_button(
-        "Alle Bilder als ZIP herunterladen",
-        data=zip_buffer.getvalue(),
-        file_name="bodymorph_output.zip",
-        mime="application/zip",
-        type="primary",
-        use_container_width=True
-    )
+        st.download_button(
+            "Alle Bilder als ZIP herunterladen",
+            data=ZIP_PATH.read_bytes(),
+            file_name="bodymorph_output.zip",
+            mime="application/zip",
+            type="primary",
+            use_container_width=True
+        )
 
 
 if errors:
