@@ -1,0 +1,66 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local image data
+data/input/*
+data/output/*
+!data/input/.gitkeep
+!data/output/.gitkeep
+
+# AI models and weights
+models/
+*.onnx
+*.pth
+*.pt
+*.safetensors
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.log
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+
+# Docker
+.docker/
+
+# Streamlit
+.streamlit/secrets.toml
