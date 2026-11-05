@@ -65,7 +65,23 @@ with st.sidebar:
 
     background_label = st.radio(
         "Hintergrund",
-        ["Farbe", "Bild", "Keine Entfernung"]
+        ["Farbe", "Bild", "Transparent", "Keine Entfernung"]
+    )
+
+    edge_erode = st.slider(
+        "Kanten erodieren (px)",
+        min_value=0,
+        max_value=10,
+        value=2,
+        step=1
+    )
+
+    edge_softness = st.slider(
+        "Kantenweichheit",
+        min_value=0.0,
+        max_value=10.0,
+        value=3.0,
+        step=0.5
     )
 
     background_color = "#D3D3D3"
@@ -157,8 +173,11 @@ if uploads:
             background_mode={
                 "Farbe": "color",
                 "Bild": "image",
+                "Transparent": "transparent",
                 "Keine Entfernung": "none",
             }[background_label],
+            edge_softness=edge_softness,
+            edge_erode=edge_erode,
             background_color=background_color,
             background_image=background_image,
             normalize_color=normalize_color,

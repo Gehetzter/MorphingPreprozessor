@@ -21,8 +21,11 @@ def load_background_image(image_bytes):
 def make_background(canvas_size, mode, color="#D3D3D3", image=None, fallback=None):
     """Erzeugt die Leinwand (PIL RGB).
 
-    mode: "color" | "image" | "none" (fallback = Randfarbe des Originals)
+    mode: "color" | "image" | "transparent" | "none" (fallback = Randfarbe des Originals)
     """
+    if mode == "transparent":
+        return Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+
     if mode == "image":
         if image is None:
             raise ValueError("Kein Hintergrundbild gewählt")
@@ -38,6 +41,13 @@ def make_background(canvas_size, mode, color="#D3D3D3", image=None, fallback=Non
 def composite(canvas, rgb, alpha, position):
     person = Image.fromarray((np.clip(rgb, 0, 1) * 255 + 0.5).astype(np.uint8))
     mask = Image.fromarray((np.clip(alpha, 0, 1) * 255 + 0.5).astype(np.uint8))
+
+    if canvas.mode == "RGBA":
+        # alpha_composite statt paste: Randfarben werden nicht mit Schwarz gemischt
+        layer = person.convert("RGBA")
+        layer.putalpha(mask)
+        canvas.alpha_composite(layer, position)
+        return canvas
 
     canvas.paste(person, position, mask)
 

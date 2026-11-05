@@ -17,7 +17,9 @@ from steps.segment import segment
 class Options:
     target_height: int = 1200
     margin_percent: float = 5
-    background_mode: str = "color"  # "color" | "image" | "none"
+    background_mode: str = "color"  # "color" | "image" | "transparent" | "none"
+    edge_softness: float = 3.0  # Kantenweichzeichnung in px (bei ~1024 px Segmentierung)
+    edge_erode: int = 2  # Erosion der Maske in px
     background_color: str = "#D3D3D3"
     background_image: object = None  # PIL-Bild
     normalize_color: bool = True
@@ -44,7 +46,12 @@ def prepare_image(image_bytes, filename, options, session):
     canvas_width = round(width / height * canvas_height)
 
     raw_mask = segment(image, session)
-    alpha = refine_mask(raw_mask, output_size=(width, height))
+    alpha = refine_mask(
+        raw_mask,
+        output_size=(width, height),
+        feather_px=options.edge_softness,
+        erode_px=options.edge_erode,
+    )
 
     bbox = find_bbox(alpha)
 

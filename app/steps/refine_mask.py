@@ -35,8 +35,8 @@ def refine_mask(
     mask,
     output_size,
     threshold=0.4,
-    erode_px=1,
-    feather_px=1.0,
+    erode_px=2,
+    feather_px=3.0,
 ):
     """Bereinigt die Rohmaske; gibt weiche Alpha-Maske in output_size=(B, H) zurück.
 
