@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 from scipy import ndimage
 
 from .load_image import resize_float
@@ -58,15 +58,22 @@ def refine_mask(
     binary = ndimage.binary_closing(binary, iterations=2)
     binary = _fill_small_holes(binary)
 
-    if erode_px > 0:
-        binary = ndimage.binary_erosion(binary, iterations=int(erode_px))
+    # Vorzeichenbehafteter Abstand zur Kante (innen positiv, in Pixeln der
+    # Rohmaske). Er ist glatt und lässt sich ohne Treppenstufen hochskalieren.
+    sdf = (
+        ndimage.distance_transform_edt(binary)
+        - ndimage.distance_transform_edt(~binary)
+    ).astype(np.float32)
+    sdf = ndimage.gaussian_filter(sdf, sigma=1.0)
 
-    alpha = binary.astype(np.float32)
+    if sdf.shape[::-1] != tuple(output_size):
+        sdf = resize_float(sdf, tuple(output_size))
 
-    if feather_px > 0:
-        alpha = ndimage.gaussian_filter(alpha, sigma=feather_px)
+    # Die Kante wird erst in voller Auflösung gelegt: Erosion verschiebt sie,
+    # die Weichheit bestimmt die Breite des Übergangs (mind. ein Ausgabepixel).
+    scale = output_size[0] / mask.shape[1]
+    width = max(2.0 * feather_px, 1.0 / scale)
 
-    if alpha.shape[::-1] != tuple(output_size):
-        alpha = resize_float(alpha, tuple(output_size))
+    alpha = 0.5 + (sdf - erode_px) / width
 
-    return np.clip(alpha, 0.0, 1.0)
+    return np.clip(alpha, 0.0, 1.0).astype(np.float32)

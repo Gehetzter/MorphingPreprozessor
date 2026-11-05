@@ -58,8 +58,8 @@ st.set_page_config(
 
 @st.cache_resource
 def load_model():
-    log.info("Lade Segmentierungsmodell isnet-general-use")
-    session = new_session("isnet-general-use")
+    log.info("Lade Segmentierungsmodell birefnet-general")
+    session = new_session("birefnet-general")
     log.info("Modell geladen")
     return session
 
