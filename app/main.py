@@ -1,13 +1,18 @@
 
 import io
+import os
+import time
 import zipfile
 import streamlit as st
 
 from pathlib import Path
 from rembg import new_session
 
+from log import get_logger
 from process import Options, process_batch
 from steps.background import load_background_image
+
+log = get_logger("bodymorph.app")
 
 
 # ------------------------------------------------
@@ -16,6 +21,29 @@ from steps.background import load_background_image
 
 OUTPUT_DIR = Path("/data/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Dateien im Ausgabeordner, die älter sind, werden beim Aufruf der Seite gelöscht
+OUTPUT_MAX_AGE_HOURS = float(os.environ.get("OUTPUT_MAX_AGE_HOURS", "24"))
+
+
+def clear_output(max_age_seconds=0):
+    """Löscht Dateien im Ausgabeordner (max_age_seconds=0: alle)."""
+    removed = 0
+    now = time.time()
+
+    for path in OUTPUT_DIR.iterdir():
+        try:
+            if path.is_file() and now - path.stat().st_mtime >= max_age_seconds:
+                path.unlink()
+                removed += 1
+        except OSError:
+            log.exception("Konnte %s nicht löschen", path)
+
+    if removed:
+        log.info("%d alte Ausgabedateien gelöscht", removed)
+
+
+clear_output(OUTPUT_MAX_AGE_HOURS * 3600)
 
 st.set_page_config(
     page_title="BodyMorph Preprocessor",
@@ -30,7 +58,10 @@ st.set_page_config(
 
 @st.cache_resource
 def load_model():
-    return new_session("isnet-general-use")
+    log.info("Lade Segmentierungsmodell isnet-general-use")
+    session = new_session("isnet-general-use")
+    log.info("Modell geladen")
+    return session
 
 
 # ------------------------------------------------
@@ -42,6 +73,11 @@ st.title("BodyMorph Preprocessor")
 st.caption(
     "Lokale Ganzkörper-Bildaufbereitung "
     "für JavaMorph"
+)
+
+st.caption(
+    f"Version: Build {os.environ.get('BUILD_NUMBER', 'dev')} "
+    f"({os.environ.get('GIT_SHA', 'unknown')})"
 )
 
 with st.sidebar:
@@ -141,6 +177,13 @@ if uploads and normalize_color:
         )
 
 
+def on_cancel():
+    log.warning("Verarbeitung vom Benutzer abgebrochen")
+    st.session_state["cancelled"] = True
+    st.session_state["results"] = []
+    st.session_state["errors"] = []
+
+
 # ------------------------------------------------
 # Verarbeitung
 # ------------------------------------------------
@@ -149,11 +192,34 @@ if uploads:
 
     st.write(f"{len(uploads)} Bilder ausgewählt")
 
-    if st.button(
+    process_clicked = st.button(
         "Bilder verarbeiten",
         type="primary",
         use_container_width=True
-    ):
+    )
+
+    if st.session_state.pop("cancelled", False):
+        st.warning("Verarbeitung abgebrochen")
+
+    if process_clicked:
+
+        if background_label == "Bild" and background_image is None:
+            st.error("Bitte ein Hintergrundbild auswählen")
+            st.stop()
+
+        clear_output()
+        st.session_state["results"] = []
+        st.session_state["errors"] = []
+
+        # Ein Klick löst einen Rerun aus (Callback läuft zuerst) und stoppt den
+        # laufenden Durchlauf beim nächsten Streamlit-Aufruf, also nach dem
+        # aktuellen Bild.
+        st.button(
+            "Abbrechen",
+            key="cancel",
+            on_click=on_cancel,
+            use_container_width=True
+        )
 
         session = load_model()
 
@@ -162,10 +228,6 @@ if uploads:
 
         progress = st.progress(0)
         status = st.empty()
-
-        if background_label == "Bild" and background_image is None:
-            st.error("Bitte ein Hintergrundbild auswählen")
-            st.stop()
 
         options = Options(
             target_height=int(target_height),

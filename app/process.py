@@ -1,8 +1,11 @@
 """Prozessablauf: verbindet die einzelnen Schritte aus dem Paket `steps`."""
 
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
+
+from log import get_logger
 
 from steps.background import composite, make_background
 from steps.color_normalize import apply_gain, average_color, body_color
@@ -11,6 +14,9 @@ from steps.decontaminate import decontaminate
 from steps.load_image import load_image
 from steps.refine_mask import refine_mask
 from steps.segment import segment
+
+
+log = get_logger("bodymorph.process")
 
 
 @dataclass
@@ -125,11 +131,27 @@ def process_batch(files, options, session, progress=None):
     errors = []
 
     total = len(files) * 2
+    batch_start = time.monotonic()
+
+    log.info(
+        "Batch gestartet: %d Bilder, Hintergrund=%s, Höhe=%d, "
+        "Erosion=%s, Weichheit=%s, Farbangleich=%s, Referenz=%s",
+        len(files), options.background_mode, options.target_height,
+        options.edge_erode, options.edge_softness,
+        options.normalize_color, options.reference_index,
+    )
 
     for index, (name, data) in enumerate(files):
+        start = time.monotonic()
+
         try:
             prepared[index] = prepare_image(data, name, options, session)
+            log.info(
+                "Freigestellt: %s (%d KB, %.1fs)",
+                name, len(data) // 1024, time.monotonic() - start,
+            )
         except Exception as exc:
+            log.exception("Fehler beim Freistellen von %s", name)
             errors.append(f"{name}: {exc}")
 
         if progress:
@@ -145,6 +167,8 @@ def process_batch(files, options, session, progress=None):
         else:
             target = average_color([p.color for p in prepared.values()])
 
+        log.info("Zielfarbe (linear RGB): %s", np.round(target, 4).tolist())
+
     results = []
 
     for step, (index, item) in enumerate(prepared.items()):
@@ -154,6 +178,7 @@ def process_batch(files, options, session, progress=None):
             image = render_image(item, options, target)
             results.append((index, image, item.metadata))
         except Exception as exc:
+            log.exception("Fehler beim Rendern von %s", name)
             errors.append(f"{name}: {exc}")
 
         if progress:
@@ -161,5 +186,10 @@ def process_batch(files, options, session, progress=None):
                 (len(files) + step + 1) / total,
                 f"Farbangleich: {name}",
             )
+
+    log.info(
+        "Batch beendet: %d ok, %d Fehler, %.1fs",
+        len(results), len(errors), time.monotonic() - batch_start,
+    )
 
     return results, errors
