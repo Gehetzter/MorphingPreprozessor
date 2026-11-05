@@ -6,7 +6,8 @@ import streamlit as st
 from pathlib import Path
 from rembg import new_session
 
-from processor import process_image
+from process import Options, process_batch
+from steps.background import load_background_image
 
 
 # ------------------------------------------------
@@ -29,7 +30,7 @@ st.set_page_config(
 
 @st.cache_resource
 def load_model():
-    return new_session("u2net")
+    return new_session("isnet-general-use")
 
 
 # ------------------------------------------------
@@ -62,9 +63,36 @@ with st.sidebar:
         value=5
     )
 
-    background = st.color_picker(
+    background_label = st.radio(
         "Hintergrund",
-        "#D3D3D3"
+        ["Farbe", "Bild", "Keine Entfernung"]
+    )
+
+    background_color = "#D3D3D3"
+    background_image = None
+
+    if background_label == "Farbe":
+        background_color = st.color_picker(
+            "Hintergrundfarbe",
+            "#D3D3D3"
+        )
+
+    elif background_label == "Bild":
+        bg_upload = st.file_uploader(
+            "Hintergrundbild",
+            type=["jpg", "jpeg", "png", "webp"]
+        )
+
+        if bg_upload:
+            background_image = load_background_image(
+                bg_upload.getvalue()
+            )
+
+    st.header("Farbnormalisierung")
+
+    normalize_color = st.checkbox(
+        "Körperfarbe angleichen",
+        value=True
     )
 
 
@@ -74,9 +102,27 @@ with st.sidebar:
 
 uploads = st.file_uploader(
     "Ganzkörperbilder auswählen",
-    type=["jpg", "jpeg", "png", "webp"],
+    type=[
+        "jpg", "jpeg", "png", "webp",
+        "cr2", "cr3", "nef", "nrw", "arw", "dng",
+        "orf", "rw2", "raf", "pef", "srw",
+    ],
     accept_multiple_files=True
 )
+
+reference_index = None
+
+if uploads and normalize_color:
+
+    reference_name = st.selectbox(
+        "Referenzbild für die Körperfarbe",
+        ["Durchschnitt aller Bilder"] + [u.name for u in uploads]
+    )
+
+    if reference_name != "Durchschnitt aller Bilder":
+        reference_index = [u.name for u in uploads].index(
+            reference_name
+        )
 
 
 # ------------------------------------------------
@@ -101,57 +147,60 @@ if uploads:
         progress = st.progress(0)
         status = st.empty()
 
-        for index, upload in enumerate(uploads):
+        if background_label == "Bild" and background_image is None:
+            st.error("Bitte ein Hintergrundbild auswählen")
+            st.stop()
 
-            status.write(f"Verarbeite {upload.name}")
+        options = Options(
+            target_height=int(target_height),
+            margin_percent=margin,
+            background_mode={
+                "Farbe": "color",
+                "Bild": "image",
+                "Keine Entfernung": "none",
+            }[background_label],
+            background_color=background_color,
+            background_image=background_image,
+            normalize_color=normalize_color,
+            reference_index=reference_index,
+        )
 
-            try:
+        def on_progress(value, text):
+            progress.progress(value)
+            status.write(text)
 
-                image_bytes = upload.getvalue()
+        processed, errors = process_batch(
+            [(u.name, u.getvalue()) for u in uploads],
+            options,
+            session,
+            progress=on_progress,
+        )
 
-                output, metadata = process_image(
-                    image_bytes=image_bytes,
-                    target_height=int(target_height),
-                    margin_percent=margin,
-                    background=background,
-                    session=session
-                )
+        for index, output, metadata in processed:
 
-                filename = (
-                    f"{index + 1:03d}_"
-                    f"{Path(upload.name).stem}.png"
-                )
-
-                output_path = OUTPUT_DIR / filename
-
-                output.save(
-                    output_path,
-                    format="PNG"
-                )
-
-                buffer = io.BytesIO()
-
-                output.save(
-                    buffer,
-                    format="PNG"
-                )
-
-                results.append({
-                    "filename": filename,
-                    "image": output,
-                    "data": buffer.getvalue(),
-                    "metadata": metadata
-                })
-
-            except Exception as exc:
-
-                errors.append(
-                    f"{upload.name}: {exc}"
-                )
-
-            progress.progress(
-                (index + 1) / len(uploads)
+            filename = (
+                f"{index + 1:03d}_"
+                f"{Path(uploads[index].name).stem}.png"
             )
+
+            output.save(
+                OUTPUT_DIR / filename,
+                format="PNG"
+            )
+
+            buffer = io.BytesIO()
+
+            output.save(
+                buffer,
+                format="PNG"
+            )
+
+            results.append({
+                "filename": filename,
+                "image": output,
+                "data": buffer.getvalue(),
+                "metadata": metadata
+            })
 
         st.session_state["results"] = results
         st.session_state["errors"] = errors

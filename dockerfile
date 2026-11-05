@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Modell bereits beim Image-Build herunterladen
 RUN mkdir -p /models && \
-    python -c "from rembg import new_session; new_session('u2net')"
+    python -c "from rembg import new_session; new_session('isnet-general-use')"
 
 # Python-Anwendung kopieren
 COPY app/ /app/
