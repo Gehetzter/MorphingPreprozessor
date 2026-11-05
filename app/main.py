@@ -152,15 +152,19 @@ with st.sidebar:
 # Upload
 # ------------------------------------------------
 
-uploads = st.file_uploader(
-    "Ganzkörperbilder auswählen",
-    type=[
-        "jpg", "jpeg", "png", "webp",
-        "cr2", "cr3", "nef", "nrw", "arw", "dng",
-        "orf", "rw2", "raf", "pef", "srw",
-    ],
-    accept_multiple_files=True
-)
+# Im Formular löst nicht jede hochgeladene Datei einen Rerun aus;
+# bei vielen Bildern verursachte das HTTP-400-Fehler beim Upload.
+with st.form("upload_form", border=False):
+    uploads = st.file_uploader(
+        "Ganzkörperbilder auswählen",
+        type=[
+            "jpg", "jpeg", "png", "webp",
+            "cr2", "cr3", "nef", "nrw", "arw", "dng",
+            "orf", "rw2", "raf", "pef", "srw",
+        ],
+        accept_multiple_files=True
+    )
+    st.form_submit_button("Bilder übernehmen")
 
 reference_index = None
 
