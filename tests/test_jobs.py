@@ -78,6 +78,8 @@ class JobTests(unittest.TestCase):
             self.assertEqual(jobs[job_id]["results"][0]["filename"], "001_portrait.png")
             with zipfile.ZipFile(directory / "bodymorph_output.zip") as archive:
                 self.assertEqual(archive.read("001_portrait.png"), b"png")
+        restored = self.manager(process)
+        self.assertEqual(len(restored.list_jobs()), 2)
         manager.delete(first)
         self.assertEqual([job["id"] for job in manager.list_jobs()], [second])
         self.assertTrue(legacy.exists())
@@ -105,6 +107,20 @@ class JobTests(unittest.TestCase):
         self.assertEqual(jobs[first]["status"], "cancelled")
         self.assertEqual(jobs[first]["errors"], ["Bild fehlgeschlagen"])
         self.assertEqual(jobs[second]["status"], "cancelled")
+
+    def test_partial_results_remain_downloadable_after_cancel(self):
+        def process(files, options, session, progress, on_result, should_cancel):
+            on_result(0, Image(), {"scale": 1})
+            raise Cancelled(["zweites Bild fehlgeschlagen"])
+
+        manager = self.manager(process)
+        job_id = manager.submit([Upload("one.jpg", b"1")], None)
+        manager._executor.shutdown(wait=True)
+        job = manager.list_jobs()[0]
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["errors"], ["zweites Bild fehlgeschlagen"])
+        with zipfile.ZipFile(manager.root / job_id / "bodymorph_output.zip") as archive:
+            self.assertEqual(archive.read("001_one.png"), b"png")
 
     def test_failed_model_and_restart_mark_interrupted(self):
         def fail():

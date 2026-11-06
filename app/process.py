@@ -36,8 +36,8 @@ class Options:
     target_height: int = 1200
     margin_percent: float = 5
     background_mode: str = "color"  # "color" | "image" | "transparent" | "none"
-    edge_softness: float = 3.0  # Kantenweichzeichnung in px (bei ~1024 px Segmentierung)
-    edge_erode: int = 2  # Erosion der Maske in px
+    edge_softness: float = 0.0  # Kantenweichzeichnung in px (bei ~1024 px Segmentierung)
+    edge_erode: int = 0  # Erosion der Maske in px
     background_color: str = "#D3D3D3"
     background_image: object = None  # PIL-Bild
     normalize_color: bool = True

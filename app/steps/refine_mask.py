@@ -35,15 +35,15 @@ def refine_mask(
     mask,
     output_size,
     threshold=0.4,
-    erode_px=2,
-    feather_px=3.0,
+    erode_px=0,
+    feather_px=0.0,
 ):
     """Bereinigt die Rohmaske; gibt weiche Alpha-Maske in output_size=(B, H) zurück.
 
     - niedrige Schwelle: halbtransparente Körperteile bleiben Teil der Person
     - größte Komponente: Restflecken verschwinden
     - kleine Löcher werden gefüllt
-    - leichte Erosion: entfernt den Saum aus altem Hintergrund
+    - optionale Erosion: entfernt den Saum aus altem Hintergrund
     """
     binary = mask > threshold
 

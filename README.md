@@ -7,6 +7,9 @@ kann geschlossen werden oder der Rechner in den Standby gehen. Im
 Auftragsverlauf können Ergebnisse später als ZIP oder einzelne PNGs
 heruntergeladen werden. Aufträge werden nacheinander verarbeitet und können
 abgebrochen werden; bereits fertiggestellte Bilder bleiben erhalten.
+Nach dem Start wird die Bildauswahl geleert, sodass neue Bilder für einen
+weiteren Auftrag ausgewählt werden können. Erosion und Kantenweichheit stehen
+standardmäßig auf 0 und können bei Bedarf angepasst werden.
 
 Ergebnisse werden nicht automatisch gelöscht. Über „Löschen bestätigen“ und
 „Auftrag und Ergebnisse löschen“ lässt sich ein beendeter Auftrag einschließlich

@@ -84,7 +84,7 @@ with st.sidebar:
         "Kanten erodieren (px)",
         min_value=0,
         max_value=10,
-        value=2,
+        value=0,
         step=1
     )
 
@@ -92,7 +92,7 @@ with st.sidebar:
         "Kantenweichheit",
         min_value=0.0,
         max_value=10.0,
-        value=3.0,
+        value=0.0,
         step=0.5
     )
 
@@ -128,6 +128,12 @@ with st.sidebar:
 # Upload
 # ------------------------------------------------
 
+if "upload_version" not in st.session_state:
+    st.session_state["upload_version"] = 0
+
+if "started_job" in st.session_state:
+    st.success(f"Auftrag {st.session_state.pop('started_job')} wurde gestartet.")
+
 with st.form("upload_form", border=False):
     uploads = st.file_uploader(
         "Ganzkörperbilder auswählen",
@@ -136,7 +142,8 @@ with st.form("upload_form", border=False):
             "cr2", "cr3", "nef", "nrw", "arw", "dng",
             "orf", "rw2", "raf", "pef", "srw",
         ],
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        key=f"uploads-{st.session_state['upload_version']}",
     )
     st.form_submit_button("Bilder übernehmen")
 
@@ -194,10 +201,13 @@ if uploads:
 
         try:
             job_id = manager.submit(uploads, options)
-            st.success(f"Auftrag {job_id[:8]} wurde gestartet.")
         except (OSError, RuntimeError) as exc:
             log.exception("Auftrag konnte nicht gestartet werden")
             st.error(f"Auftrag konnte nicht gestartet werden: {exc}")
+        else:
+            st.session_state["started_job"] = job_id[:8]
+            st.session_state["upload_version"] += 1
+            st.rerun()
 
 
 # ------------------------------------------------
@@ -234,7 +244,8 @@ def show_history():
         return f"{created:%d.%m.%Y %H:%M:%S} · {job_id[:8]} · {labels.get(job['status'], job['status'])}"
 
     selected = st.selectbox("Auftrag auswählen", list(job_by_id), format_func=job_label)
-    for job in [job_by_id[selected]]:
+
+    def show_job(job):
         job_id = job["id"]
         created = datetime.fromisoformat(job["created"]).astimezone()
         label = f"{created:%d.%m.%Y %H:%M:%S} · {job_id[:8]} · {labels.get(job['status'], job['status'])}"
@@ -249,7 +260,7 @@ def show_history():
                         st.info("Abbruch angefordert; das aktuelle Bild wird noch beendet.")
                     except ValueError as exc:
                         st.warning(str(exc))
-                continue
+                return
 
             for error in job["errors"]:
                 st.error(error)
@@ -262,7 +273,13 @@ def show_history():
                         file_name=f"bodymorph_{job_id[:8]}.zip", mime="application/zip",
                         key=f"zip-{job_id}", type="primary",
                     )
-                for result in job["results"]:
+                if job["results"]:
+                    result_index = st.selectbox(
+                        "Bild auswählen", range(len(job["results"])),
+                        format_func=lambda index: job["results"][index]["filename"],
+                        key=f"image-{job_id}",
+                    )
+                    result = job["results"][result_index]
                     filename = result["filename"]
                     metadata = result["metadata"]
                     with st.container(border=True):
@@ -292,6 +309,8 @@ def show_history():
                         st.error(f"Auftrag konnte nicht gelöscht werden: {exc}")
                     else:
                         st.rerun(scope="fragment")
+
+    show_job(job_by_id[selected])
 
 
 show_history()
