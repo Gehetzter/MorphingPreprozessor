@@ -153,7 +153,17 @@ def render_image(prepared, options, target_color):
     return composite(canvas, rgb, alpha, prepared.position)
 
 
-def process_batch(files, options, session, progress=None, on_result=None):
+class BatchCancelled(Exception):
+    """Der Auftrag wurde vom Benutzer abgebrochen."""
+
+    def __init__(self, errors=None):
+        super().__init__("Verarbeitung abgebrochen")
+        self.errors = errors or []
+
+
+def process_batch(
+    files, options, session, progress=None, on_result=None, should_cancel=None
+):
     """Verarbeitet [(name, loader), ...]; loader ist ein Aufruf, der die Bytes liefert.
 
     Jedes fertige Bild geht an on_result(index, image, metadata) und wird danach
@@ -162,11 +172,11 @@ def process_batch(files, options, session, progress=None, on_result=None):
     """
     with _BATCH_LOCK, tempfile.TemporaryDirectory(prefix="bodymorph_") as directory:
         return _run_batch(
-            files, options, session, progress, on_result, directory
+            files, options, session, progress, on_result, directory, should_cancel
         )
 
 
-def _run_batch(files, options, session, progress, on_result, directory):
+def _run_batch(files, options, session, progress, on_result, directory, should_cancel):
     prepared = {}
     errors = []
     ok = 0
@@ -183,6 +193,8 @@ def _run_batch(files, options, session, progress, on_result, directory):
     )
 
     for index, (name, loader) in enumerate(files):
+        if should_cancel and should_cancel():
+            raise BatchCancelled(errors)
         start = time.monotonic()
         data = None
 
@@ -224,6 +236,8 @@ def _run_batch(files, options, session, progress, on_result, directory):
         log.info("Zielfarbe (linear RGB): %s", np.round(target, 4).tolist())
 
     for step, (index, item) in enumerate(prepared.items()):
+        if should_cancel and should_cancel():
+            raise BatchCancelled(errors)
         name = files[index][0]
         image = None
 
@@ -246,6 +260,9 @@ def _run_batch(files, options, session, progress, on_result, directory):
                 (len(files) + step + 1) / total,
                 f"Farbangleich: {name}",
             )
+
+    if should_cancel and should_cancel():
+        raise BatchCancelled(errors)
 
     log.info(
         "Batch beendet: %d ok, %d Fehler, %.1fs",

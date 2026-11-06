@@ -1,14 +1,14 @@
 
 import os
-import time
-import zipfile
 import streamlit as st
 
+from datetime import datetime
 from pathlib import Path
 
+from jobs import ACTIVE, JobManager
 from log import get_logger
-from model import MODEL_NAME, load_session
-from process import Options, process_batch
+from model import load_session
+from process import BatchCancelled, Options, process_batch
 from steps.background import load_background_image
 
 log = get_logger("bodymorph.app")
@@ -20,30 +20,6 @@ log = get_logger("bodymorph.app")
 
 OUTPUT_DIR = Path("/data/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-ZIP_PATH = OUTPUT_DIR / "bodymorph_output.zip"
-
-# Dateien im Ausgabeordner, die älter sind, werden beim Aufruf der Seite gelöscht
-OUTPUT_MAX_AGE_HOURS = float(os.environ.get("OUTPUT_MAX_AGE_HOURS", "24"))
-
-
-def clear_output(max_age_seconds=0):
-    """Löscht Dateien im Ausgabeordner (max_age_seconds=0: alle)."""
-    removed = 0
-    now = time.time()
-
-    for path in OUTPUT_DIR.iterdir():
-        try:
-            if path.is_file() and now - path.stat().st_mtime >= max_age_seconds:
-                path.unlink()
-                removed += 1
-        except OSError:
-            log.exception("Konnte %s nicht löschen", path)
-
-    if removed:
-        log.info("%d alte Ausgabedateien gelöscht", removed)
-
-
-clear_output(OUTPUT_MAX_AGE_HOURS * 3600)
 
 st.set_page_config(
     page_title="BodyMorph Preprocessor",
@@ -53,15 +29,15 @@ st.set_page_config(
 
 
 # ------------------------------------------------
-# Modell laden
+# Auftragsverwaltung
 # ------------------------------------------------
 
 @st.cache_resource
-def load_model():
-    log.info("Lade Segmentierungsmodell %s", MODEL_NAME)
-    session = load_session()
-    log.info("Modell geladen")
-    return session
+def job_manager():
+    return JobManager(OUTPUT_DIR, load_session, process_batch, BatchCancelled)
+
+
+manager = job_manager()
 
 
 # ------------------------------------------------
@@ -152,8 +128,6 @@ with st.sidebar:
 # Upload
 # ------------------------------------------------
 
-# Im Formular löst nicht jede hochgeladene Datei einen Rerun aus;
-# bei vielen Bildern verursachte das HTTP-400-Fehler beim Upload.
 with st.form("upload_form", border=False):
     uploads = st.file_uploader(
         "Ganzkörperbilder auswählen",
@@ -181,13 +155,6 @@ if uploads and normalize_color:
         )
 
 
-def on_cancel():
-    log.warning("Verarbeitung vom Benutzer abgebrochen")
-    st.session_state["cancelled"] = True
-    st.session_state["results"] = []
-    st.session_state["errors"] = []
-
-
 # ------------------------------------------------
 # Verarbeitung
 # ------------------------------------------------
@@ -202,36 +169,11 @@ if uploads:
         use_container_width=True
     )
 
-    if st.session_state.pop("cancelled", False):
-        st.warning("Verarbeitung abgebrochen")
-
     if process_clicked:
 
         if background_label == "Bild" and background_image is None:
             st.error("Bitte ein Hintergrundbild auswählen")
             st.stop()
-
-        clear_output()
-        st.session_state["results"] = []
-        st.session_state["errors"] = []
-
-        # Ein Klick löst einen Rerun aus (Callback läuft zuerst) und stoppt den
-        # laufenden Durchlauf beim nächsten Streamlit-Aufruf, also nach dem
-        # aktuellen Bild.
-        st.button(
-            "Abbrechen",
-            key="cancel",
-            on_click=on_cancel,
-            use_container_width=True
-        )
-
-        session = load_model()
-
-        results = []
-        errors = []
-
-        progress = st.progress(0)
-        status = st.empty()
 
         options = Options(
             target_height=int(target_height),
@@ -250,128 +192,106 @@ if uploads:
             reference_index=reference_index,
         )
 
-        def on_progress(value, text):
-            progress.progress(value)
-            status.write(text)
-
-        def on_result(index, output, metadata):
-            filename = (
-                f"{index + 1:03d}_"
-                f"{Path(uploads[index].name).stem}.png"
-            )
-
-            output.save(
-                OUTPUT_DIR / filename,
-                format="PNG"
-            )
-
-            results.append({
-                "filename": filename,
-                "metadata": metadata
-            })
-
-        _, errors = process_batch(
-            [(u.name, u.getvalue) for u in uploads],
-            options,
-            session,
-            progress=on_progress,
-            on_result=on_result,
-        )
-
-        # ZIP auf der Platte (PNGs sind schon komprimiert -> nur ablegen)
-        with zipfile.ZipFile(
-            ZIP_PATH,
-            "w",
-            zipfile.ZIP_STORED
-        ) as archive:
-
-            for result in results:
-                archive.write(
-                    OUTPUT_DIR / result["filename"],
-                    result["filename"]
-                )
-
-        st.session_state["results"] = results
-        st.session_state["errors"] = errors
-
-        status.success("Verarbeitung abgeschlossen")
+        try:
+            job_id = manager.submit(uploads, options)
+            st.success(f"Auftrag {job_id[:8]} wurde gestartet.")
+        except (OSError, RuntimeError) as exc:
+            log.exception("Auftrag konnte nicht gestartet werden")
+            st.error(f"Auftrag konnte nicht gestartet werden: {exc}")
 
 
 # ------------------------------------------------
-# Ergebnisse
+# Auftragsverlauf
 # ------------------------------------------------
 
-results = st.session_state.get("results", [])
-errors = st.session_state.get("errors", [])
-
-if results:
-
+@st.fragment(run_every=5)
+def show_history():
     st.divider()
-    st.header("Verarbeitete Bilder")
-
-    st.success(
-        f"{len(results)} Bilder erfolgreich verarbeitet"
+    st.header("Auftragsverlauf")
+    st.caption(
+        "Aufträge und Ergebnisse sind für alle Benutzer dieser Anwendung sichtbar "
+        "und bleiben bis zum manuellen Löschen erhalten."
     )
+    try:
+        jobs = manager.list_jobs()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        st.error(f"Auftragsverlauf konnte nicht geladen werden: {exc}")
+        return
+    if not jobs:
+        st.info("Noch keine Aufträge vorhanden.")
+        return
 
-    for result in results:
+    labels = {
+        "queued": "Wartet", "running": "In Bearbeitung",
+        "completed": "Abgeschlossen", "cancelled": "Abgebrochen",
+        "failed": "Fehlgeschlagen", "interrupted": "Unterbrochen",
+    }
+    job_by_id = {job["id"]: job for job in jobs}
 
-        with st.expander(result["filename"]):
+    def job_label(job_id):
+        job = job_by_id[job_id]
+        created = datetime.fromisoformat(job["created"]).astimezone()
+        return f"{created:%d.%m.%Y %H:%M:%S} · {job_id[:8]} · {labels.get(job['status'], job['status'])}"
 
-            col1, col2 = st.columns([2, 1])
+    selected = st.selectbox("Auftrag auswählen", list(job_by_id), format_func=job_label)
+    for job in [job_by_id[selected]]:
+        job_id = job["id"]
+        created = datetime.fromisoformat(job["created"]).astimezone()
+        label = f"{created:%d.%m.%Y %H:%M:%S} · {job_id[:8]} · {labels.get(job['status'], job['status'])}"
+        with st.expander(label, expanded=job["status"] in ACTIVE):
+            st.write(job["message"])
+            st.write(f"{len(job['results'])} von {job['total']} Bildern gespeichert")
+            if job["status"] in ACTIVE:
+                st.progress(job["progress"])
+                if st.button("Auftrag abbrechen", key=f"cancel-{job_id}"):
+                    try:
+                        manager.cancel(job_id)
+                        st.info("Abbruch angefordert; das aktuelle Bild wird noch beendet.")
+                    except ValueError as exc:
+                        st.warning(str(exc))
+                continue
 
-            with col1:
+            for error in job["errors"]:
+                st.error(error)
+            directory = manager.root / job_id
+            try:
+                archive = directory / "bodymorph_output.zip"
+                if archive.exists():
+                    st.download_button(
+                        "Alle Bilder als ZIP herunterladen", data=archive.read_bytes(),
+                        file_name=f"bodymorph_{job_id[:8]}.zip", mime="application/zip",
+                        key=f"zip-{job_id}", type="primary",
+                    )
+                for result in job["results"]:
+                    filename = result["filename"]
+                    metadata = result["metadata"]
+                    with st.container(border=True):
+                        st.write(f"**{filename}**")
+                        st.image(str(directory / filename), width=300)
+                        st.write(
+                            f"Ausgabe: {metadata['output_size']} · "
+                            f"Körpergröße: {metadata['scaled_size']} · "
+                            f"Bounding Box: {metadata['bounding_box']} · "
+                            f"Skalierung: {metadata['scale']:.3f}"
+                        )
+                        st.download_button(
+                            "PNG herunterladen", data=(directory / filename).read_bytes(),
+                            file_name=filename, mime="image/png",
+                            key=f"png-{job_id}-{filename}",
+                        )
+            except OSError as exc:
+                log.exception("Ergebnisse von Auftrag %s konnten nicht gelesen werden", job_id)
+                st.error(f"Ergebnisse konnten nicht gelesen werden: {exc}")
 
-                st.image(
-                    str(OUTPUT_DIR / result["filename"]),
-                    use_container_width=True
-                )
-
-            with col2:
-
-                metadata = result["metadata"]
-
-                st.write("**Bildinformationen**")
-
-                st.write(
-                    f"Ausgabe: {metadata['output_size']}"
-                )
-
-                st.write(
-                    f"Körpergröße: {metadata['scaled_size']}"
-                )
-
-                st.write(
-                    f"Bounding Box: {metadata['bounding_box']}"
-                )
-
-                st.write(
-                    f"Skalierung: {metadata['scale']:.3f}"
-                )
-
-                st.download_button(
-                    "PNG herunterladen",
-                    data=(OUTPUT_DIR / result["filename"]).read_bytes(),
-                    file_name=result["filename"],
-                    mime="image/png",
-                    key=result["filename"]
-                )
-
-    # ZIP-Export (liegt fertig auf der Platte)
-    if ZIP_PATH.exists():
-
-        st.download_button(
-            "Alle Bilder als ZIP herunterladen",
-            data=ZIP_PATH.read_bytes(),
-            file_name="bodymorph_output.zip",
-            mime="application/zip",
-            type="primary",
-            use_container_width=True
-        )
+            if st.checkbox("Löschen bestätigen", key=f"confirm-{job_id}"):
+                if st.button("Auftrag und Ergebnisse löschen", key=f"delete-{job_id}"):
+                    try:
+                        manager.delete(job_id)
+                    except (OSError, ValueError) as exc:
+                        log.exception("Auftrag %s konnte nicht gelöscht werden", job_id)
+                        st.error(f"Auftrag konnte nicht gelöscht werden: {exc}")
+                    else:
+                        st.rerun(scope="fragment")
 
 
-if errors:
-
-    st.warning("Fehler bei einzelnen Bildern")
-
-    for error in errors:
-        st.error(error)
+show_history()
